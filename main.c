@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <signal.h>
 
 #define VERY_SECURE_XOR_KEY 0x04110073
 
@@ -35,13 +36,18 @@ int
 socket_send_message(int socket, char *message) {
  size_t message_length;
  message_length = strlen(message);
- return (send(socket, message, message_length, 0)) == message_length;
+ return (send(socket, message, message_length, 0)) == -1;
 }
 
 int
-socket_prompt(int socket, char *message, size_t output_size, char *output) {
- socket_send_message(socket, message);
- return recv(socket, output, output_size, 0) != 0;
+socket_prompt(int socket, char *message, size_t result_size, char *result) {
+ int recv_status;
+ if (socket_send_message(socket, message) != 0) {
+  return -1;
+ }
+ recv_status = recv(socket, result, result_size, 0) != 0;
+ result[strcspn(result, "\n")] = 0;
+ return recv_status;
 }
 
 Account *
@@ -121,79 +127,104 @@ handle_client(int client_socket) {
 
  error_value = 0;
 
- socket_send_message(client_socket,
-                     "Welcome to the Xorage! Here you can store your information with encryption.\n"
-                     "What do you want to do?\n"
-                     "1. Create new account.\n"
-                     "2. Store info.\n"
-                     "3. List your account's secrets.\n"
-                     "4. List all accounts\n"
-                     "> ");
- recv(client_socket, read_buffer, (sizeof read_buffer), 0);
+ while (error_value == 0) {
 
- if ((action_number = atoi(read_buffer)) == 0) {
-  socket_send_message(client_socket, "Not a number!\n");
-  error_value = -1;
-  goto defer;
- }
+  socket_prompt(
+   client_socket,
+   "Welcome to the Xorage! Here you can store your information with encryption.\n"
+   "What do you want to do?\n"
+   "1. Create new account.\n"
+   "2. Store info.\n"
+   "3. List your account's secrets.\n"
+   "4. List all accounts\n"
+   "> ",
+   (sizeof read_buffer), read_buffer);
 
- switch (action_number) {
- case 1: {
-  Account *account;
-  char username[0x40];
-  char master_password[0x40];
-  socket_prompt(client_socket, "Enter your username: ", (sizeof username), username);
-  socket_prompt(client_socket, "Enter your master password: ", (sizeof master_password), master_password);
-  account = malloc((sizeof *account));
-  accounts = realloc(accounts, accounts_length + 1);
-  accounts[accounts_length] = account;
-  accounts_length += 1;
- } break;
-
- case 2: {
-  Account *account;
-  char secret[0x100];
-  if ((account = account_login(client_socket)) == NULL) {
-   error_value = -1;
-   goto defer;
-  }
-  socket_prompt(client_socket, "Enter your secret: ", (sizeof secret), secret);
- } break;
-
- case 3: {
-  Account *account;
-  if ((account = account_login(client_socket)) == NULL) {
+  if ((action_number = atoi(read_buffer)) == 0) {
+   socket_send_message(client_socket, "Not a number!\n");
    error_value = -1;
    goto defer;
   }
 
-  for (int i = 0; i < tokens_length; ++i) {
-   Token *token = tokens[i];
-   if (token->account == account) {
-    char token_text[0x40];
-    token_decrypt(token, (sizeof token_text), token_text);
-    socket_send_message(client_socket, "> ");
-    socket_send_message(client_socket, token_text);
+  switch (action_number) {
+  case 1: {
+   Account *account;
+   char username[0x40];
+   char master_password[0x40];
+   socket_prompt(client_socket, "Enter your username: ", (sizeof username), username);
+   socket_prompt(client_socket, "Enter your master password: ", (sizeof master_password), master_password);
+   account = malloc((sizeof *account));
+   account->name = malloc((sizeof *account->name) * strlen(username));
+   strcpy(account->name, username);
+   account->master_password = malloc((sizeof *account->master_password) * strlen(master_password));
+   strcpy(account->master_password, master_password);
+   accounts = realloc(accounts, accounts_length + 1);
+   accounts[accounts_length] = account;
+   accounts_length += 1;
+  } break;
+
+  case 2: {
+   Account *account;
+   Token *token;
+   char secret[0x100];
+   size_t secret_size;
+   char secret_encrypted[0x100];
+   if ((account = account_login(client_socket)) == NULL) {
+    error_value = -1;
+    goto defer;
+   }
+   socket_prompt(client_socket, "Enter your secret: ", (sizeof secret), secret);
+   secret_size = strlen(secret);
+   token_encrypt(account, secret, secret_size, secret_encrypted);
+
+   token = malloc((sizeof *token));
+   token->value = malloc(secret_size);
+   memcpy(token->value, secret_encrypted, secret_size);
+   token->value_size = secret_size;
+   token->account = account;
+   tokens = realloc(tokens, tokens_length + 1);
+   tokens[tokens_length] = token;
+   tokens_length += 1;
+  } break;
+
+  case 3: {
+   Account *account;
+   if ((account = account_login(client_socket)) == NULL) {
+    error_value = -1;
+    goto defer;
+   }
+
+   for (int i = 0; i < tokens_length; ++i) {
+    Token *token = tokens[i];
+    if (token->account == account) {
+     char token_text[0x40];
+     token_decrypt(token, (sizeof token_text), token_text);
+     socket_send_message(client_socket, "< ");
+     socket_send_message(client_socket, token_text);
+     socket_send_message(client_socket, "\n");
+    }
+   }
+  } break;
+
+  case 4: {
+   for (int i = 0; i < accounts_length; ++i) {
+    Account *account;
+    account = accounts[i];
+    if (account->name == NULL) {
+     fprintf(stderr, "warning, account with NULL name.\n");
+    }
+    socket_send_message(client_socket, "< ");
+    socket_send_message(client_socket, account->name);
     socket_send_message(client_socket, "\n");
    }
-  }
- } break;
+  } break;
 
- case 4: {
-  for (int i = 0; i < accounts_length; ++i) {
-   Account *account;
-   account = accounts[i];
-   socket_send_message(client_socket, "> ");
-   socket_send_message(client_socket, account->name);
-   socket_send_message(client_socket, "\n");
+  default: {
+   socket_send_message(client_socket, "Unknown action!\n");
+   error_value = -1;
+   goto defer;
+  } break;
   }
- } break;
-
- default: {
-  socket_send_message(client_socket, "Unknown action!\n");
-  error_value = -1;
-  goto defer;
- } break;
  }
 
 defer:
@@ -210,6 +241,8 @@ main(void) {
  int server_socket;
  int enable_bit;
  struct sockaddr_in server_sockaddr, client_sockaddr;
+
+ sigaction(SIGPIPE, &(struct sigaction){SIG_IGN}, NULL);
 
  accounts = malloc((sizeof *accounts));
  accounts_length = 0;
