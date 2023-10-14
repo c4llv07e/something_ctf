@@ -2,16 +2,16 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <stdlib.h>
-#include <signal.h>
 
 #define VERY_SECURE_XOR_KEY 0x04110073
 
@@ -33,21 +33,40 @@ size_t tokens_length;
 Token **tokens;
 
 int
+pipe_closed(int pipe) {
+ struct pollfd pfd = {
+  .fd = pipe,
+  .events = POLLOUT,
+ };
+ if (poll(&pfd, 1, 1) < 0) {
+  return 0;
+ }
+
+ return pfd.revents & POLLERR;
+}
+
+int
 socket_send_message(int socket, char *message) {
  size_t message_length;
+ if (pipe_closed(socket)) {
+  return -1;
+ }
  message_length = strlen(message);
  return (send(socket, message, message_length, 0)) == -1;
 }
 
 int
 socket_prompt(int socket, char *message, size_t result_size, char *result) {
- int recv_status;
+ size_t recv_size;
+ if (pipe_closed(socket)) {
+  return -1;
+ }
  if (socket_send_message(socket, message) != 0) {
   return -1;
  }
- recv_status = recv(socket, result, result_size, 0) != 0;
+ recv_size = recv(socket, result, result_size, 0);
  result[strcspn(result, "\n")] = 0;
- return recv_status;
+ return recv_size <= 0;
 }
 
 Account *
@@ -66,8 +85,16 @@ account_login(int client_socket) {
  Account *account;
  char username[0x40];
  char master_password[0x40];
- socket_prompt(client_socket, "Enter your username: ", (sizeof username), username);
- socket_prompt(client_socket, "Enter your master password: ", (sizeof master_password), master_password);
+ if (socket_prompt(client_socket, "Enter your username: ", (sizeof username), username) != 0) {
+  return NULL;
+ }
+ if (socket_prompt(
+      client_socket,
+      "Enter your master password: ",
+      (sizeof master_password),
+      master_password) != 0) {
+  return NULL;
+ }
 
  if ((account = account_find_by_name(username)) == NULL) {
   socket_send_message(client_socket, "Can't find required account!\n");
@@ -129,7 +156,7 @@ handle_client(int client_socket) {
 
  while (error_value == 0) {
 
-  socket_prompt(
+  if (socket_prompt(
    client_socket,
    "Welcome to the Xorage! Here you can store your information with encryption.\n"
    "What do you want to do?\n"
@@ -138,7 +165,10 @@ handle_client(int client_socket) {
    "3. List your account's secrets.\n"
    "4. List all accounts\n"
    "> ",
-   (sizeof read_buffer), read_buffer);
+   (sizeof read_buffer), read_buffer) != 0) {
+   error_value = -1;
+   goto defer;
+  }
 
   if ((action_number = atoi(read_buffer)) == 0) {
    socket_send_message(client_socket, "Not a number!\n");
@@ -151,8 +181,18 @@ handle_client(int client_socket) {
    Account *account;
    char username[0x40];
    char master_password[0x40];
-   socket_prompt(client_socket, "Enter your username: ", (sizeof username), username);
-   socket_prompt(client_socket, "Enter your master password: ", (sizeof master_password), master_password);
+   if (socket_prompt(client_socket, "Enter your username: ", (sizeof username), username) != 0) {
+    error_value = -1;
+    goto defer;
+   }
+   if (socket_prompt(
+        client_socket,
+        "Enter your master password: ",
+        (sizeof master_password),
+        master_password) != 0) {
+    error_value = -1;
+    goto defer;
+   }
    account = malloc((sizeof *account));
    account->name = malloc((sizeof *account->name) * strlen(username));
    strcpy(account->name, username);
@@ -194,6 +234,7 @@ handle_client(int client_socket) {
     goto defer;
    }
 
+   socket_send_message(client_socket, "Account's secrets:\n");
    for (int i = 0; i < tokens_length; ++i) {
     Token *token = tokens[i];
     if (token->account == account) {
@@ -241,8 +282,6 @@ main(void) {
  int server_socket;
  int enable_bit;
  struct sockaddr_in server_sockaddr, client_sockaddr;
-
- sigaction(SIGPIPE, &(struct sigaction){SIG_IGN}, NULL);
 
  accounts = malloc((sizeof *accounts));
  accounts_length = 0;
