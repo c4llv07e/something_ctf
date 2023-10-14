@@ -71,7 +71,7 @@ socket_prompt(int socket, char *message, size_t result_size, char *result) {
 
 Account *
 account_find_by_name(char *name) {
- for (int i = 0; i < accounts_length; ++i) {
+ for (size_t i = 0; i < accounts_length; ++i) {
   Account *iter_account = accounts[i];
   if (strcmp(iter_account->name, name) == 0) {
    return iter_account;
@@ -117,7 +117,7 @@ xor_string_string(size_t value_size, char *value, size_t key_size, char *key, ch
 }
 
 int
-token_decrypt(Token *token, size_t result_size, char *result) {
+token_decrypt(Token *token, char *result) {
  Account *account = token->account;
  char *master_password = account->master_password;
  size_t master_password_length = strlen(master_password);
@@ -131,7 +131,7 @@ token_decrypt(Token *token, size_t result_size, char *result) {
 }
 
 int
-token_encrypt(Account *account, char *value, size_t result_size, char *result) {
+token_encrypt(Account *account, char *value, char *result) {
  size_t value_size = strlen(value);
  char *master_password = account->master_password;
  size_t master_password_length = strlen(master_password);
@@ -215,7 +215,7 @@ handle_client(int client_socket) {
    }
    socket_prompt(client_socket, "Enter your secret: ", (sizeof secret), secret);
    secret_size = strlen(secret);
-   token_encrypt(account, secret, secret_size, secret_encrypted);
+   token_encrypt(account, secret, secret_encrypted);
 
    token = malloc((sizeof *token));
    token->value = malloc(secret_size);
@@ -235,11 +235,11 @@ handle_client(int client_socket) {
    }
 
    socket_send_message(client_socket, "Account's secrets:\n");
-   for (int i = 0; i < tokens_length; ++i) {
+   for (size_t i = 0; i < tokens_length; ++i) {
     Token *token = tokens[i];
     if (token->account == account) {
      char token_text[0x40];
-     token_decrypt(token, (sizeof token_text), token_text);
+     token_decrypt(token, token_text);
      socket_send_message(client_socket, "< ");
      socket_send_message(client_socket, token_text);
      socket_send_message(client_socket, "\n");
@@ -248,7 +248,7 @@ handle_client(int client_socket) {
   } break;
 
   case 4: {
-   for (int i = 0; i < accounts_length; ++i) {
+   for (size_t i = 0; i < accounts_length; ++i) {
     Account *account;
     account = accounts[i];
     if (account->name == NULL) {
