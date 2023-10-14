@@ -2,4 +2,4 @@
 
 set -xe
 
-gcc -ggdb -Wall -Wextra -Wpedantic -o main main.c
+gcc -DDEBUG -std=c99 -ggdb -Wall -Wextra -Wpedantic -o main main.c

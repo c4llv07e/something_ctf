@@ -13,8 +13,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define VERY_SECURE_XOR_KEY 0x04110073
-
 typedef struct Account {
  char *name;
  char *master_password;
@@ -109,6 +107,65 @@ account_login(int client_socket) {
  return account;
 }
 
+Account *
+account_new(char *name, char *master_password) {
+ Account *account;
+ account = malloc((sizeof *account));
+ account->name = malloc((sizeof *account->name) * strlen(name));
+ strcpy(account->name, name);
+ account->master_password = malloc((sizeof *account->master_password) * strlen(master_password));
+ strcpy(account->master_password, master_password);
+ accounts = realloc(accounts, accounts_length + 1);
+ accounts[accounts_length] = account;
+ accounts_length += 1;
+ return account;
+}
+
+const char b64chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+size_t
+b64_encoded_size(size_t inlen) {
+ size_t ret;
+
+ ret = inlen;
+ if (inlen % 3 != 0) {
+  ret += 3 - (inlen % 3);
+ }
+ ret /= 3;
+ ret *= 4;
+
+ return ret;
+}
+
+void
+b64_encode(size_t text_size, char *text, char *result) {
+ size_t elen;
+ size_t i;
+ size_t j;
+ size_t v;
+
+ elen = b64_encoded_size(text_size);
+ result[elen] = '\0';
+
+ for (i=0, j=0; i<text_size; i+=3, j+=4) {
+  v = text[i];
+  v = i+1 < text_size ? v << 8 | text[i+1] : v << 8;
+  v = i+2 < text_size ? v << 8 | text[i+2] : v << 8;
+
+  result[j]   = b64chars[(v >> 18) & 0x3F];
+  result[j+1] = b64chars[(v >> 12) & 0x3F];
+  if (i+1 < text_size) {
+   result[j+2] = b64chars[(v >> 6) & 0x3F];
+  } else {
+   result[j+2] = '=';
+  }
+  if (i+2 < text_size) {
+   result[j+3] = b64chars[v & 0x3F];
+  } else {
+   result[j+3] = '=';
+  }
+ }
+}
+
 void
 xor_string_string(size_t value_size, char *value, size_t key_size, char *key, char *result) {
  for (size_t i = 0; i < value_size; ++i) {
@@ -144,6 +201,20 @@ token_encrypt(Account *account, char *value, char *result) {
  return 0;
 }
 
+Token *
+token_new(Account *account, char *secret) {
+ Token *token;
+ token = malloc((sizeof *token));
+ token->value_size = strlen(secret);
+ token->value = malloc(token->value_size);
+ token_encrypt(account, secret, token->value);
+ token->account = account;
+ tokens = realloc(tokens, tokens_length + 1);
+ tokens[tokens_length] = token;
+ tokens_length += 1;
+ return token;
+}
+
 /* Handles client communication.
    NOTE: Client socket will be closed at the end. */
 int
@@ -161,9 +232,10 @@ handle_client(int client_socket) {
    "Welcome to the Xorage! Here you can store your information with encryption.\n"
    "What do you want to do?\n"
    "1. Create new account.\n"
-   "2. Store info.\n"
+   "2. Store secret.\n"
    "3. List your account's secrets.\n"
-   "4. List all accounts\n"
+   "4. List all accounts.\n"
+   "5. List all encrypted secrets.\n"
    "> ",
    (sizeof read_buffer), read_buffer) != 0) {
    error_value = -1;
@@ -178,7 +250,6 @@ handle_client(int client_socket) {
 
   switch (action_number) {
   case 1: {
-   Account *account;
    char username[0x40];
    char master_password[0x40];
    if (socket_prompt(client_socket, "Enter your username: ", (sizeof username), username) != 0) {
@@ -193,38 +264,18 @@ handle_client(int client_socket) {
     error_value = -1;
     goto defer;
    }
-   account = malloc((sizeof *account));
-   account->name = malloc((sizeof *account->name) * strlen(username));
-   strcpy(account->name, username);
-   account->master_password = malloc((sizeof *account->master_password) * strlen(master_password));
-   strcpy(account->master_password, master_password);
-   accounts = realloc(accounts, accounts_length + 1);
-   accounts[accounts_length] = account;
-   accounts_length += 1;
+   account_new(username, master_password);
   } break;
 
   case 2: {
    Account *account;
-   Token *token;
    char secret[0x100];
-   size_t secret_size;
-   char secret_encrypted[0x100];
    if ((account = account_login(client_socket)) == NULL) {
     error_value = -1;
     goto defer;
    }
    socket_prompt(client_socket, "Enter your secret: ", (sizeof secret), secret);
-   secret_size = strlen(secret);
-   token_encrypt(account, secret, secret_encrypted);
-
-   token = malloc((sizeof *token));
-   token->value = malloc(secret_size);
-   memcpy(token->value, secret_encrypted, secret_size);
-   token->value_size = secret_size;
-   token->account = account;
-   tokens = realloc(tokens, tokens_length + 1);
-   tokens[tokens_length] = token;
-   tokens_length += 1;
+   token_new(account, secret);
   } break;
 
   case 3: {
@@ -260,6 +311,21 @@ handle_client(int client_socket) {
    }
   } break;
 
+  case 5: {
+   for (size_t i = 0; i < tokens_length; ++i) {
+    Token *token = tokens[i];
+    char *token_text;
+    token_text = malloc(token->value_size * (sizeof token->value));
+    b64_encode(token->value_size, token->value, token_text);
+    socket_send_message(client_socket, "< \"");
+    socket_send_message(client_socket, token->account->name);
+    socket_send_message(client_socket, "\": \"");
+    socket_send_message(client_socket, token_text);
+    socket_send_message(client_socket, "\"\n");
+    free(token_text);
+   }
+  } break;
+
   default: {
    socket_send_message(client_socket, "Unknown action!\n");
    error_value = -1;
@@ -288,6 +354,14 @@ main(void) {
 
  tokens = malloc((sizeof *tokens));
  tokens_length = 0;
+
+#ifdef DEBUG
+ {
+  Account *test_account;
+  test_account = account_new("user", "123");
+  token_new(test_account, "int main() { *(char*)0 = 0; return 0; }");
+ }
+#endif
 
  server_socket = socket(AF_INET, SOCK_STREAM, 0);
  if (server_socket == -1) {
