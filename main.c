@@ -50,7 +50,7 @@ socket_send_message(int socket, char *message) {
   return -1;
  }
  message_length = strlen(message);
- return (send(socket, message, message_length, 0)) == -1;
+ return (send(socket, message, message_length, MSG_NOSIGNAL)) == -1;
 }
 
 int
@@ -63,6 +63,7 @@ socket_prompt(int socket, char *message, size_t result_size, char *result) {
   return -1;
  }
  recv_size = recv(socket, result, result_size, 0);
+ result[recv_size] = 0;
  result[strcspn(result, "\n")] = 0;
  return recv_size <= 0;
 }
@@ -115,7 +116,7 @@ account_new(char *name, char *master_password) {
  strcpy(account->name, name);
  account->master_password = malloc((sizeof *account->master_password) * strlen(master_password));
  strcpy(account->master_password, master_password);
- accounts = realloc(accounts, accounts_length + 1);
+ accounts = realloc(accounts, (sizeof *accounts) * (accounts_length + 1));
  accounts[accounts_length] = account;
  accounts_length += 1;
  return account;
@@ -209,7 +210,7 @@ token_new(Account *account, char *secret) {
  token->value = malloc(token->value_size);
  token_encrypt(account, secret, token->value);
  token->account = account;
- tokens = realloc(tokens, tokens_length + 1);
+ tokens = realloc(tokens, (sizeof *tokens) * (tokens_length + 1));
  tokens[tokens_length] = token;
  tokens_length += 1;
  return token;
@@ -355,13 +356,20 @@ main(void) {
  tokens = malloc((sizeof *tokens));
  tokens_length = 0;
 
-#ifdef DEBUG
- {
-  Account *test_account;
-  test_account = account_new("user", "123");
-  token_new(test_account, "int main() { *(char*)0 = 0; return 0; }");
- }
-#endif
+/* #ifdef DEBUG */
+/*  { */
+/*   Account *test_account; */
+/*   test_account = account_new("user", "123"); */
+/*   token_new(test_account, "int main() { *(char*)0 = 0; return 0; }"); */
+/*  } */
+/* #endif */
+
+/*  Account *alice_account; */
+/*  alice_account = account_new("alice", "shpctf{4lIc3_1n_tH3_x0r_w0r1d}"); */
+/*  token_new(alice_account, "'Twas brillig, and the slithy toves"); */
+/*  token_new(alice_account, "Did gyre and gimble in the wabe;"); */
+/*  token_new(alice_account, "All mimsy were the borogoves,"); */
+/*  token_new(alice_account, "And the mome raths outgrabe."); */
 
  server_socket = socket(AF_INET, SOCK_STREAM, 0);
  if (server_socket == -1) {
